@@ -288,6 +288,7 @@ SC_MODULE(Monitor)
 	IMAGE imagein;
 	clock_t start;
 	clock_t finish;
+	clock_t previous;
 	double totaltime;
 	sc_fifo_in<IMAGE> ImgIn;
 	sc_fifo_in<clock_t> TimeIn;
@@ -355,6 +356,10 @@ SC_MODULE(Monitor)
 			finish = (double)clock() / CLOCKS_PER_SEC * 1000;
 			totaltime = (double)(finish - start);
 			cout << finish << " ms: Monitor received frame " << i + 1 << " with " << totaltime << " ms delay" << endl;
+			if (i > 0)
+				cout << finish << " ms: " << finish - previous
+					 << " ms after previous frame, " << 1000 / (double)(finish - previous) << " FPS." << endl;
+			previous = finish;
 			/****************************************************************************
 			 * Write out the edge image to a file.
 			 ****************************************************************************/
@@ -448,8 +453,8 @@ SC_MODULE(Receive_Image)
 
 SC_MODULE(Gaussian_Kernel)
 {
-	sc_fifo_out<FKERNAL> G_Out1, G_Out2;
-	sc_fifo_out<int> C_Out1, C_Out2;
+	sc_fifo_out<FKERNAL> G_Out;
+	sc_fifo_out<int> C_Out;
 	FKERNAL gaussian_kernel;
 	int kernel_center;
 
@@ -504,10 +509,8 @@ SC_MODULE(Gaussian_Kernel)
 			make_gaussian_kernel(SIGMA, gaussian_kernel, &windowsize);
 			center = windowsize / 2;
 			kernel_center = center;
-			G_Out1.write(gaussian_kernel);
-			G_Out2.write(gaussian_kernel);
-			C_Out1.write(kernel_center);
-			C_Out2.write(kernel_center);
+			G_Out.write(gaussian_kernel);
+			C_Out.write(kernel_center);
 		}
 	}
 
@@ -523,6 +526,8 @@ SC_MODULE(BlurX)
 	sc_fifo_in<IMAGE> ImgIn;
 	sc_fifo_in<FKERNAL> KernelIn;
 	sc_fifo_in<int> CenterIn;
+	sc_fifo_out<FKERNAL> KernelOut;
+	sc_fifo_out<int> CenterOut;
 	sc_fifo_out<FIMAGE> TempimOut;
 
 	IMAGE image;
@@ -568,6 +573,8 @@ SC_MODULE(BlurX)
 			KernelIn.read(kernel);
 			CenterIn.read(center);
 			blur_x(ROWS, COLS);
+			KernelOut.write(kernel);
+			CenterOut.write(center);
 			TempimOut.write(tempim);
 		}
 	}
@@ -661,14 +668,14 @@ SC_MODULE(Gaussian_Smooth)
 		receiver.ImgIn.bind(ImgIn);
 		receiver.ImgOut.bind(img_q);
 
-		g_kernel.C_Out1.bind(int_q1);
-		g_kernel.C_Out2.bind(int_q2);
-		g_kernel.G_Out1.bind(knl_q1);
-		g_kernel.G_Out2.bind(knl_q2);
+		g_kernel.C_Out.bind(int_q1);
+		g_kernel.G_Out.bind(knl_q1);
 
 		blurx.ImgIn.bind(img_q);
 		blurx.CenterIn.bind(int_q1);
 		blurx.KernelIn.bind(knl_q1);
+		blurx.CenterOut.bind(int_q2);
+		blurx.KernelOut.bind(knl_q2);
 		blurx.TempimOut.bind(tmp_q);
 
 		blury.CenterIn.bind(int_q2);
@@ -681,7 +688,7 @@ SC_MODULE(Gaussian_Smooth)
 SC_MODULE(Derivative_X_Y)
 {
 	sc_fifo_in<SIMAGE> SmoothedimIn;
-	sc_fifo_out<SIMAGE> XOut1, XOut2, YOut1, YOut2;
+	sc_fifo_out<SIMAGE> XOut, YOut;
 	SIMAGE smoothedim, delta_x, delta_y;
 
 	/*******************************************************************************
@@ -743,10 +750,8 @@ SC_MODULE(Derivative_X_Y)
 		{
 			SmoothedimIn.read(smoothedim);
 			derivative_x_y(ROWS, COLS);
-			XOut1.write(delta_x);
-			XOut2.write(delta_x);
-			YOut1.write(delta_y);
-			YOut2.write(delta_y);
+			XOut.write(delta_x);
+			YOut.write(delta_y);
 		}
 	}
 
@@ -760,7 +765,8 @@ SC_MODULE(Derivative_X_Y)
 SC_MODULE(Magnitude_X_Y)
 {
 	sc_fifo_in<SIMAGE> XIn, YIn;
-	sc_fifo_out<SIMAGE> MagnitudeOut1, MagnitudeOut2;
+	sc_fifo_out<SIMAGE> XOut, YOut;
+	sc_fifo_out<SIMAGE> MagnitudeOut;
 	SIMAGE delta_x, delta_y, magnitude;
 
 	/*******************************************************************************
@@ -792,8 +798,9 @@ SC_MODULE(Magnitude_X_Y)
 			XIn.read(delta_x);
 			YIn.read(delta_y);
 			magnitude_x_y(ROWS, COLS);
-			MagnitudeOut1.write(magnitude);
-			MagnitudeOut2.write(magnitude);
+			XOut.write(delta_x);
+			YOut.write(delta_y);
+			MagnitudeOut.write(magnitude);
 		}
 	}
 
@@ -808,6 +815,7 @@ SC_MODULE(Non_Max_Supp)
 {
 	sc_fifo_in<SIMAGE> GradxIn, GradyIn, MagIn;
 	sc_fifo_out<IMAGE> NmsOut;
+	sc_fifo_out<SIMAGE> MagOut;
 	SIMAGE gradx, grady, mag;
 	IMAGE nms;
 
@@ -1035,6 +1043,7 @@ SC_MODULE(Non_Max_Supp)
 			MagIn.read(mag);
 			non_max_supp(ROWS, COLS, result);
 			nms = result;
+			MagOut.write(mag);
 			NmsOut.write(nms);
 		}
 	}
@@ -1252,19 +1261,19 @@ SC_MODULE(DUT)
 		gaussian_smooth.SmoothedimOut.bind(q1);
 
 		derivative_x_y.SmoothedimIn.bind(q1);
-		derivative_x_y.XOut1.bind(q2);
-		derivative_x_y.XOut2.bind(q3);
-		derivative_x_y.YOut1.bind(q4);
-		derivative_x_y.YOut2.bind(q5);
+		derivative_x_y.XOut.bind(q2);
+		derivative_x_y.YOut.bind(q3);
 
 		magnitude_x_y.XIn.bind(q2);
-		magnitude_x_y.YIn.bind(q4);
-		magnitude_x_y.MagnitudeOut1.bind(q6);
-		magnitude_x_y.MagnitudeOut2.bind(q7);
+		magnitude_x_y.YIn.bind(q3);
+		magnitude_x_y.XOut.bind(q4);
+		magnitude_x_y.YOut.bind(q5);
+		magnitude_x_y.MagnitudeOut.bind(q6);
 
-		non_max_supp.GradxIn.bind(q3);
+		non_max_supp.GradxIn.bind(q4);
 		non_max_supp.GradyIn.bind(q5);
 		non_max_supp.MagIn.bind(q6);
+		non_max_supp.MagOut.bind(q7);
 		non_max_supp.NmsOut.bind(nms);
 
 		apply_hysteresis.MagIn.bind(q7);
